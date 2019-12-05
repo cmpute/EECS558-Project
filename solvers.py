@@ -1,8 +1,9 @@
 import numpy as np
 import scipy.spatial as sps
 from scipy.sparse import csc_matrix
-from shapely.geometry import Point, MultiPoint, LineString
+from shapely.geometry import Point, MultiPoint, LineString, mapping
 from shapely.ops import unary_union
+from tqdm import trange
 
 class GridSolver:
     def __init__(self):
@@ -16,7 +17,7 @@ class GridSolver:
 
     def report_solution(self):
         '''
-        This function report the solution in form of a chain of positions and time stamp
+        This function report the solution in form of a chain of positions
         '''
         pass
 
@@ -62,33 +63,90 @@ class SampleGraphSolver:
             line = LineString([self._samples[n1], self._samples[n2]])
             if line.intersection(obstacle_union).is_empty:
                 line_list.append((n1, n2))
-                line_list.append((n2, n1))
         self._connections = line_list
 
-    def solve(self, env, steps=50):
+    def solve(self, env, max_steps=50, goal_reward=1000, safety_weight=1, time_weight=1):
         '''
         Steps that the algorithm runs to find the value function
         '''
-        GOAL_REWARD = 1000
 
+        print("Preparing mesh...")
         self._generate_mesh(env)
 
-        dist_list = [self._samples.geoms[n1].distance(self._samples.geoms[n2]) for n1, n2 in self._connections]
-        adj_matrix = csc_matrix((dist_list, zip(*self._connections)), shape=(self._sample_num, self._sample_num))
+        print("Preparing matrices...")
+        dist_list = [time_weight * self._samples.geoms[n1].distance(self._samples.geoms[n2]) for n1, n2 in self._connections] * 2
+        connection_list = self._connections + [(n2, n1) for n1, n2 in self._connections]
+        adj_matrix = csc_matrix((dist_list, zip(*connection_list)), shape=(self._sample_num, self._sample_num))
+        # point_array = np.array(mapping(self._samples)['coordinates'])
+        safety_reward = np.array([env.obstacles.distance(p) for p in self._samples]) * safety_weight
+        goal_array = np.zeros(self._sample_num)
+        goal_array[0] = goal_reward
 
-        values = np.zeros(self._sample_num)
-        values[0] = GOAL_REWARD
-        best_actions = np.empty((steps, self._sample_num))
-        for i in range(steps):
-            pass # TODO: update value matrix 
+        print("Connectivity check...")
+        stack = [1] # start from intial point
+        connect_flag = np.full(self._sample_num, False)
+        while len(stack) > 0:
+            node = stack.pop()
+            for next_node in adj_matrix[node].nonzero()[1]:
+                if not connect_flag[next_node]:
+                    stack.append(next_node)
+                    connect_flag[next_node] = True
+        if not connect_flag[0]:
+            raise RuntimeError("Initial point and end point is not connected! Consider add more samples")
 
-    def report_solution(self):
-        pass
+        # backward induction
+        values = np.copy(goal_array)
+        best_actions = []
+        for t in trange(max_steps, desc="Backward induction..."):
+            new_values = np.empty(self._sample_num)
+            new_actions = np.empty(self._sample_num, dtype=int)
+            for n1 in range(self._sample_num):
+                mask = adj_matrix[n1].nonzero()[1]
+                if len(mask) == 0:
+                    continue
+
+                rewards = values[mask]
+                rewards += goal_array[mask] # goal reward
+                rewards += safety_reward[mask] # safety reward
+                rewards -= adj_matrix[n1, mask].toarray().ravel() # distance cost
+                
+                # rewards = rewards.ravel()
+                best_n2 = np.argmax(rewards)
+                new_actions[n1] = mask[best_n2] # store in forward direction
+                new_values[n1] = rewards[best_n2]
+
+            values = new_values
+            best_actions.append(new_actions)
+            if np.all(new_values[connect_flag] >= goal_reward):
+                print("Early stopped")
+                break
+
+        self._solution = np.array(list(reversed(best_actions)))
+
+    def report_solution(self, start_sample_index=1):
+        node_list = [start_sample_index]
+        for row in self._solution:
+            node_list.append(row[node_list[-1]])
+            if node_list[-1] == 0:
+                break
+        return node_list
 
     def render(self, ax):
         ax.scatter([p.x for p in self._samples], [p.y for p in self._samples])
+
+        solution = self.report_solution()
+        solution_set = set()
+        for i in range(len(solution) - 1):
+            solution_set.add((solution[i], solution[i+1]))
+
         for n1, n2 in self._connections:
-            ax.plot([self._samples[n1].x, self._samples[n2].x], [self._samples[n1].y, self._samples[n2].y], c='black')
+            if (n1, n2) in solution_set or (n2, n1) in solution_set:
+                color = "green"
+                lwidth = 4
+            else:
+                color = "black"
+                lwidth = 1
+            ax.plot([self._samples[n1].x, self._samples[n2].x], [self._samples[n1].y, self._samples[n2].y], lw=lwidth, c=color)
 
 class CellSolver:
     '''
