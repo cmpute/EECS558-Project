@@ -57,9 +57,19 @@ class DrivingEnv:
 
     def cost(self, loc):
         '''
-        Calculate location cost
+        Calculate cost for position (cost for nodes)
         '''
-        time_cost = 1 # constant for each evaluation
         safety_cost = 1 / self._obstacles.distance(loc)
 
-        return time_cost + safety_cost
+        return safety_cost
+
+    def cost2(self, loc1, loc2):
+        '''
+        Calculate cost for moving from loc1 to loc2 (cost for edges)
+        '''
+        time_cost = loc1.distance(loc2) * 0.1 # assume constant speed
+
+        return time_cost
+
+    def solution_cost(self, solution):
+        raise NotImplementedError()

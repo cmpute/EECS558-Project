@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.spatial as sps
+from scipy.sparse import csc_matrix
 from shapely.geometry import Point, MultiPoint, LineString
 from shapely.ops import unary_union
 
@@ -8,6 +9,15 @@ class GridSolver:
         pass
 
     def solve(self, env):
+        '''
+        This function solves the problem given certain environment
+        '''
+        pass
+
+    def report_solution(self):
+        '''
+        This function report the solution in form of a chain of positions and time stamp
+        '''
         pass
 
 class SampleGraphSolver:
@@ -18,11 +28,12 @@ class SampleGraphSolver:
         self._sample_num = sample_num
         self._samples = None
         self._connections = None
+        self._solution = None # store solution for a certain case
 
     def _generate_mesh(self, env):
-        # generate nodes
+        # generate nodes, first node is the goal
         points = env._generate_points(self._sample_num - 2)
-        points = np.concatenate((points, [[env._start.x, env._start.y], [env._end.x, env._end.y]]))
+        points = np.concatenate(([[env._end.x, env._end.y], [env._start.x, env._start.y]], points))
         
         while True:
             dist_list = np.array([Point(xy[0], xy[1]).distance(env.obstacles) for xy in points])
@@ -51,10 +62,28 @@ class SampleGraphSolver:
             line = LineString([self._samples[n1], self._samples[n2]])
             if line.intersection(obstacle_union).is_empty:
                 line_list.append((n1, n2))
+                line_list.append((n2, n1))
         self._connections = line_list
 
-    def solve(self, env):
+    def solve(self, env, steps=50):
+        '''
+        Steps that the algorithm runs to find the value function
+        '''
+        GOAL_REWARD = 1000
+
         self._generate_mesh(env)
+
+        dist_list = [self._samples.geoms[n1].distance(self._samples.geoms[n2]) for n1, n2 in self._connections]
+        adj_matrix = csc_matrix((dist_list, zip(*self._connections)), shape=(self._sample_num, self._sample_num))
+
+        values = np.zeros(self._sample_num)
+        values[0] = GOAL_REWARD
+        best_actions = np.empty((steps, self._sample_num))
+        for i in range(steps):
+            pass # TODO: update value matrix 
+
+    def report_solution(self):
+        pass
 
     def render(self, ax):
         ax.scatter([p.x for p in self._samples], [p.y for p in self._samples])
