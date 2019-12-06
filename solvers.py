@@ -2,10 +2,13 @@ import numpy as np
 import scipy.spatial as sps
 from scipy.sparse import csc_matrix
 from shapely.geometry import Point, MultiPoint, LineString, mapping
-from shapely.ops import unary_union
+from shapely.ops import unary_union, nearest_points
 from tqdm import trange
 
-class GridSolver:
+class BaseSolver:
+    '''
+    Solver base, see below for what you need to implement
+    '''
     def __init__(self):
         pass
 
@@ -13,15 +16,41 @@ class GridSolver:
         '''
         This function solves the problem given certain environment
         '''
-        pass
+        raise NotImplementedError("Derived class should implement this function")
 
     def report_solution(self):
         '''
         This function report the solution in form of a chain of positions
         '''
+        raise NotImplementedError("Derived class should implement this function")
+
+    def action(self, state, step):
+        '''
+        After solving a environment, generate action for given state based on solution strategy.
+        The action return the movement to next target point.
+        '''
+        raise NotImplementedError("Derived class should implement this function")
+
+    def render(self, ax):
+        '''
+        Render debug elements onto a figure, this is for debugging
+        '''
         pass
 
-class SampleGraphSolver:
+class GridSolver(BaseSolver):
+    def __init__(self):
+        pass
+
+    def solve(self, env):
+        pass
+
+    def report_solution(self):
+        pass
+
+    def action(self, state, step):
+        pass
+
+class SampleGraphSolver(BaseSolver):
     '''
     This solver generate random samples and connect them together into a graph with constraint check
     '''
@@ -66,9 +95,6 @@ class SampleGraphSolver:
         self._connections = line_list
 
     def solve(self, env, max_steps=50, goal_reward=1000, safety_weight=1, time_weight=1):
-        '''
-        Steps that the algorithm runs to find the value function
-        '''
 
         print("Preparing mesh...")
         self._generate_mesh(env)
@@ -97,7 +123,7 @@ class SampleGraphSolver:
         # backward induction
         values = np.copy(goal_array)
         best_actions = []
-        for t in trange(max_steps, desc="Backward induction..."):
+        for _ in trange(max_steps, desc="Backward induction..."):
             new_values = np.empty(self._sample_num)
             new_actions = np.empty(self._sample_num, dtype=int)
             for n1 in range(self._sample_num):
@@ -110,7 +136,6 @@ class SampleGraphSolver:
                 rewards += safety_reward[mask] # safety reward
                 rewards -= adj_matrix[n1, mask].toarray().ravel() # distance cost
                 
-                # rewards = rewards.ravel()
                 best_n2 = np.argmax(rewards)
                 new_actions[n1] = mask[best_n2] # store in forward direction
                 new_values[n1] = rewards[best_n2]
@@ -122,6 +147,8 @@ class SampleGraphSolver:
                 break
 
         self._solution = np.array(list(reversed(best_actions)))
+        if not np.all(new_values[connect_flag] >= goal_reward):
+            print("!!! No feasible solution found in given steps !!!")
 
     def report_solution(self, start_sample_index=1):
         node_list = [start_sample_index]
@@ -148,12 +175,16 @@ class SampleGraphSolver:
                 lwidth = 1
             ax.plot([self._samples[n1].x, self._samples[n2].x], [self._samples[n1].y, self._samples[n2].y], lw=lwidth, c=color)
 
-class CellSolver:
+    def action(self, state, step):
+        dist = np.array([(state[0] - p.x, state[1] - p.y) for p in self._samples])
+        nearest = np.argmin(np.linalg.norm(dist, axis=1))
+        step = step % len(self._solution) # XXX: what to do if need more steps
+        target = self._samples[self._solution[step, nearest]]
+        return target.x - state[0], target.y - state[1]
+
+class CellSolver(BaseSolver):
     '''
     This solver generate cells and find a path between the cells
     '''
     def __init__(self):
-        pass
-
-    def solve(self, env):
         pass
