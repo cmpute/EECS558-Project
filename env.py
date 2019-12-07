@@ -1,6 +1,8 @@
 import numpy as np
 from matplotlib import pyplot as plt, patches as patches
 from shapely.geometry import box, Point, MultiPolygon
+from solvers import default_settings
+from easydict import EasyDict as edict
 
 class DrivingEnv:
     def __init__(self, obstacle_num=10, random_seed=None):
@@ -55,38 +57,40 @@ class DrivingEnv:
         ax.set_xlim([self._area[0], self._area[2]])
         ax.set_ylim([self._area[1], self._area[3]])
 
-    def simulate(self, solver, ax=None, arrive_thres=0.5, motion_noise=0.01, observation_noise=0.1, obstacle_noise=0.1, time_weight=1, safety_weight=1):
-        '''
-        arrive_thres: we consider the vehicle to be arrived at the target if the ddistance bewteen 
-        motion_noise: proportional to moving distance
-        observation_noise: noise for ego location observation
-        obstacle_noise: noise for reward process
-        ax: if provided with matplotlib ax, we will plot the transient into the figure
-        '''
+    def simulate(self, solver, ax=None, max_steps=1000, **settings):
+        # default settings
+        configs = edict(default_settings)
+        configs.motion_noise = 0.01 # proportional to moving distance
+        configs.observation_noise = 0.1 # noise for ego location observation
+        configs.obstacle_noise = 0.1 # noise for reward process
+        configs.update(settings)
 
-        max_steps = 100
         states = [np.array([self._start.x, self._start.y])]
         end = np.array([self._end.x, self._end.y])
         cost = 0.0
         for step in range(max_steps):
-            obsrv = states[-1] + np.random.normal(scale=observation_noise, size=2)
+            obsrv = states[-1] + self._random_state.normal(scale=configs.observation_noise, size=2)
             action = np.asarray(solver.action(obsrv, step))
-            new_state = states[-1] + action + np.random.normal(scale=motion_noise*np.linalg.norm(action - states[-1]), size=2)
+            new_state = states[-1] + action + self._random_state.normal(scale=configs.motion_noise*np.linalg.norm(action - states[-1]), size=2)
 
             # calculate cost
-            cost += np.linalg.norm(action) * time_weight
-            cost += self._obstacles.distance(Point(new_state)) * safety_weight
+            obs_distance = self._obstacles.distance(Point(new_state))
+            cost -= np.linalg.norm(action) * configs.time_weight
+            if obs_distance < 1e-6:
+                cost -= 1000
+            cost -= self._obstacles.distance(Point(new_state)) * configs.safety_weight
             # TODO: add cost of crash and cost randomness
 
             # update state and plot
-            ax.plot([states[-1][0], new_state[0]], [states[-1][1], new_state[1]], lw=4, c="blue")
+            if ax:
+                ax.plot([states[-1][0], new_state[0]], [states[-1][1], new_state[1]], lw=4, c="blue")
             states.append(new_state)
 
-            if np.linalg.norm(states[-1] - end) < arrive_thres:
+            if np.linalg.norm(states[-1] - end) < configs.goal_dist_thres:
                 print("Navigate succeed")
                 break
 
-        if np.linalg.norm(states[-1] - end) >= arrive_thres:
+        if np.linalg.norm(states[-1] - end) >= configs.goal_dist_thres:
             print("!!! Navigation failed !!!")
 
         print("Final cost: %f" % cost)

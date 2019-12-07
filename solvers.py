@@ -4,6 +4,8 @@ from scipy.sparse import csc_matrix
 from shapely.geometry import Point, MultiPoint, LineString, mapping
 from shapely.ops import unary_union, nearest_points
 from tqdm import trange
+from easydict import EasyDict as edict
+from matplotlib import patches as patches
 
 class BaseSolver:
     '''
@@ -12,7 +14,7 @@ class BaseSolver:
     def __init__(self):
         pass
 
-    def solve(self, env):
+    def solve(self, env, max_steps=50):
         '''
         This function solves the problem given certain environment
         '''
@@ -37,18 +39,140 @@ class BaseSolver:
         '''
         pass
 
+default_settings = dict(
+    goal_reward=10000,
+    goal_dist_thres=0.1,
+    collision_cost=-1000,
+    safety_weight=1,
+    time_weight=1,
+)
+
 class GridSolver(BaseSolver):
-    def __init__(self):
-        pass
+    def __init__(self, grid_size=10):
+        self._grid_size = grid_size
+        self._grid = None
+        self._grid_ticks_x = None
+        self._grid_ticks_y = None
+        self._grid_length_x = 0
+        self._grid_length_y = 0
+        self._start_xy = None
+        self._end_xy = None
 
-    def solve(self, env):
-        pass
+    def solve(self, env, max_steps=200, **settings):
+        configs = edict(default_settings)
+        configs.update(settings)
 
-    def report_solution(self):
-        pass
+        print("Preparing mesh...")
+        self._grid = np.full((self._grid_size, self._grid_size), False)
+        self._grid_ticks_x = np.linspace(env._area[0], env._area[2], self._grid_size + 1)
+        self._grid_ticks_y = np.linspace(env._area[1], env._area[3], self._grid_size + 1)
+        self._grid_length_x = (env._area[2] - env._area[0]) / float(self._grid_size)
+        self._grid_length_y = (env._area[3] - env._area[1]) / float(self._grid_size)
+        self._start_xy = [np.searchsorted(self._grid_ticks_x, env._start.x)-1, np.searchsorted(self._grid_ticks_y, env._start.y)-1]
+        self._end_xy = [np.searchsorted(self._grid_ticks_x, env._end.x)-1, np.searchsorted(self._grid_ticks_y, env._end.y)-1]
+
+        print("Preparing matrices")
+        for ob in env.obstacles:
+            minx, miny, maxx, maxy = ob.bounds
+            iminx = np.clip(np.searchsorted(self._grid_ticks_x, minx), 1, self._grid_size) - 1
+            iminy = np.clip(np.searchsorted(self._grid_ticks_y, miny), 1, self._grid_size) - 1
+            imaxx = np.clip(np.searchsorted(self._grid_ticks_x, maxx), 1, self._grid_size)
+            imaxy = np.clip(np.searchsorted(self._grid_ticks_y, maxy), 1, self._grid_size)
+            self._grid[iminx:imaxx, iminy:imaxy] = True
+
+        goal_array = np.zeros((self._grid_size, self._grid_size))
+        goal_array[self._end_xy[0], self._end_xy[1]] = configs.goal_reward
+        safety_cost = np.array([[1/(env.obstacles.distance(Point(
+                self._grid_ticks_x[j] + self._grid_length_x/2,
+                self._grid_ticks_y[i] + self._grid_length_y/2)) + 1e-8)
+            for i in range(self._grid_size)]
+            for j in range(self._grid_size)]
+        ) * configs.safety_weight
+
+        values = np.full((self._grid_size + 2, self._grid_size + 2), -np.inf) # two more rows and columns as sentinels
+        values[1:-1, 1:-1] = goal_array
+        best_actions = []
+        for _ in trange(max_steps, desc="Backward induction..."):
+            # actions are up(0), right(1), down(2), left(3)
+            values[1:-1, 2:][self._grid] = -np.inf # you cannot go to blocked area
+            best_n2 = np.argmax([ # center block
+                values[1:-1, 2:], # up
+                values[2:, 1:-1], # right
+                values[1:-1, :-2], # down
+                values[:-2, 1:-1], # left
+            ], axis=0)
+            best_actions.append(best_n2)
+
+            new_values = np.full((self._grid_size + 2, self._grid_size + 2), -np.inf)
+            new_values[1:-1, 1:-1] = -(safety_cost + configs.time_weight)
+            new_values[1:-1, 1:-1][best_n2 == 0] += values[1:-1, 2:][best_n2 == 0]
+            new_values[1:-1, 1:-1][best_n2 == 1] += values[2:, 1:-1][best_n2 == 1]
+            new_values[1:-1, 1:-1][best_n2 == 2] += values[1:-1, :-2][best_n2 == 2]
+            new_values[1:-1, 1:-1][best_n2 == 3] += values[:-2, 1:-1][best_n2 == 3]
+            values = new_values
+
+        self._solution = np.array(list(reversed(best_actions)))
+        if not np.all(values[1:-1, 1:-1][self._grid] >= 0):
+            print("!!! No feasible solution found in given steps !!!")
+
+    def report_solution(self, start_xy=None):
+        loc = start_xy or self._start_xy
+        loc_list = []
+        for sol_t in self._solution:
+            action = sol_t[loc[0], loc[1]]
+            if action == 0:
+                loc[1] += 1
+            elif action == 1:
+                loc[0] += 1
+            elif action == 2:
+                loc[1] -= 1
+            elif action == 3:
+                loc[0] -= 1
+
+            loc_list.append(list(loc))
+            if loc == self._end_xy:
+                break
+        return loc_list
 
     def action(self, state, step):
-        pass
+        # TODO!!: there're problems on edge of the grid
+        ix = np.clip(np.searchsorted(self._grid_ticks_x, state[0]), 1, self._grid_size) - 1
+        iy = np.clip(np.searchsorted(self._grid_ticks_y, state[1]), 1, self._grid_size) - 1
+
+        step = step % len(self._solution) # XXX: what to do if need more steps
+        action = self._solution[0][ix, iy]
+        if action == 0:
+            return 0, self._grid_length_y
+        elif action == 1:
+            return self._grid_length_x, 0
+        elif action == 2:
+            return 0, -self._grid_length_y
+        elif action == 3:
+            return -self._grid_length_x, 0
+
+    def render(self, ax):
+        # draw grids
+        for x in self._grid_ticks_x:
+            ax.axvline(x, ls='--')
+        for y in self._grid_ticks_y:
+            ax.axhline(y, ls='--')
+
+        # draw grid values
+        for i in range(self._grid_size):
+            for j in range(self._grid_size):
+                if self._grid[i,j]:
+                    rect = patches.Rectangle((self._grid_ticks_x[i], self._grid_ticks_y[j]),
+                        self._grid_length_x, self._grid_length_y, color="#f1a20888")
+                    ax.add_patch(rect)
+
+        # draw solution
+        solution = self.report_solution()
+        for i in range(len(solution) - 1):
+            x1 = self._grid_ticks_x[solution[i][0]] + self._grid_length_x/2
+            y1 = self._grid_ticks_y[solution[i][1]] + self._grid_length_y/2
+            x2 = self._grid_ticks_x[solution[i+1][0]] + self._grid_length_x/2
+            y2 = self._grid_ticks_y[solution[i+1][1]] + self._grid_length_y/2
+            ax.plot([x1, x2], [y1, y2], lw=4, c='green')
 
 class SampleGraphSolver(BaseSolver):
     '''
@@ -94,19 +218,21 @@ class SampleGraphSolver(BaseSolver):
                 line_list.append((n1, n2))
         self._connections = line_list
 
-    def solve(self, env, max_steps=50, goal_reward=1000, safety_weight=1, time_weight=1):
+    def solve(self, env, max_steps=50, early_stop=True, **settings):
+        configs = edict(default_settings)
+        configs.update(settings)
 
         print("Preparing mesh...")
         self._generate_mesh(env)
 
         print("Preparing matrices...")
-        dist_list = [time_weight * self._samples.geoms[n1].distance(self._samples.geoms[n2]) for n1, n2 in self._connections] * 2
+        dist_list = [configs.time_weight * self._samples.geoms[n1].distance(self._samples.geoms[n2]) for n1, n2 in self._connections] * 2
         connection_list = self._connections + [(n2, n1) for n1, n2 in self._connections]
         adj_matrix = csc_matrix((dist_list, zip(*connection_list)), shape=(self._sample_num, self._sample_num))
         # point_array = np.array(mapping(self._samples)['coordinates'])
-        safety_reward = np.array([env.obstacles.distance(p) for p in self._samples]) * safety_weight
+        safety_cost = np.array([1/env.obstacles.distance(p) for p in self._samples]) * configs.safety_weight
         goal_array = np.zeros(self._sample_num)
-        goal_array[0] = goal_reward
+        goal_array[0] = configs.goal_reward # In backward induction, we require exact arrival
 
         print("Connectivity check...")
         stack = [1] # start from intial point
@@ -123,6 +249,7 @@ class SampleGraphSolver(BaseSolver):
         # backward induction
         values = np.copy(goal_array)
         best_actions = []
+        # XXX: should this be max step limit or converge condition?
         for _ in trange(max_steps, desc="Backward induction..."):
             new_values = np.empty(self._sample_num)
             new_actions = np.empty(self._sample_num, dtype=int)
@@ -132,8 +259,8 @@ class SampleGraphSolver(BaseSolver):
                     continue
 
                 rewards = values[mask]
-                rewards += goal_array[mask] # goal reward
-                rewards += safety_reward[mask] # safety reward
+                rewards += goal_array[n1] # goal reward
+                rewards -= safety_cost[n1] # safety cost
                 rewards -= adj_matrix[n1, mask].toarray().ravel() # distance cost
                 
                 best_n2 = np.argmax(rewards)
@@ -142,12 +269,13 @@ class SampleGraphSolver(BaseSolver):
 
             values = new_values
             best_actions.append(new_actions)
-            if np.all(new_values[connect_flag] >= goal_reward):
-                print("Early stopped")
-                break
+            if np.all(new_values[connect_flag] >= 0):
+                if early_stop:
+                    print("Early stopped")
+                    break
 
         self._solution = np.array(list(reversed(best_actions)))
-        if not np.all(new_values[connect_flag] >= goal_reward):
+        if not np.all(new_values[connect_flag] >= 0):
             print("!!! No feasible solution found in given steps !!!")
 
     def report_solution(self, start_sample_index=1):

@@ -30,6 +30,10 @@ The major problems here we will met in vehicle path planning are:
 
 In our project, we only focus on the first problem and explore the ways to solve planning by dynamic programming with some simplification.
 
+We will describe the problem constraints into two kinds:
+1. Soft constraint, which is dealed by cost function
+2. Hard constraint, which is interpreted by state space
+
 # Grid solver
 
 First we will try a very brief idea, where state space is rasterized into grid and action space is just walking along the grids.
