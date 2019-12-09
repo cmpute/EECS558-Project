@@ -4,9 +4,9 @@ from env import DrivingEnv
 from solvers import GridSolver, SampleGraphSolver
 
 env = DrivingEnv(15, random_seed=1234)
-solver = GridSolver(21)
-# solver = SampleGraphSolver(800)
-solver.solve(env, max_steps=500, safety_weight=10, goal_dist_thres=0.01)
+# solver = GridSolver(50)
+solver = SampleGraphSolver(800)
+solver.solve(env, max_steps=200, early_stop=False, safety_weight=100, safety_type='tanh')
 
 fig, ax = plt.subplots(1)
 env.render(ax)

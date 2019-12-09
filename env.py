@@ -60,8 +60,8 @@ class DrivingEnv:
     def simulate(self, solver, ax=None, max_steps=1000, **settings):
         # default settings
         configs = edict(default_settings)
-        configs.motion_noise = 0.01 # proportional to moving distance
-        configs.observation_noise = 0.1 # noise for ego location observation
+        configs.motion_noise = 0.02 # proportional to moving distance
+        configs.observation_noise = 0.02 # noise for ego location observation
         configs.obstacle_noise = 0.1 # noise for reward process
         configs.update(settings)
 
@@ -74,12 +74,12 @@ class DrivingEnv:
             new_state = states[-1] + action + self._random_state.normal(scale=configs.motion_noise*np.linalg.norm(action - states[-1]), size=2)
 
             # calculate cost
-            obs_distance = self._obstacles.distance(Point(new_state))
             cost -= np.linalg.norm(action) * configs.time_weight
-            if obs_distance < 1e-6:
+            obs_distance = max(0.0, self._obstacles.distance(Point(new_state)) + self._random_state.normal(scale=configs.obstacle_noise))
+            if obs_distance < 1e-3:
                 cost -= 1000
-            cost -= self._obstacles.distance(Point(new_state)) * configs.safety_weight
-            # TODO: add cost of crash and cost randomness
+            else:
+                cost -= 1 / obs_distance * configs.safety_weight
 
             # update state and plot
             if ax:

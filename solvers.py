@@ -1,3 +1,4 @@
+import time
 import numpy as np
 import scipy.spatial as sps
 from scipy.sparse import csc_matrix
@@ -41,9 +42,10 @@ class BaseSolver:
 
 default_settings = dict(
     goal_reward=10000,
-    goal_dist_thres=0.1,
+    goal_dist_thres=0.3,
     collision_cost=-1000,
     safety_weight=1,
+    safety_scale=5,
     time_weight=1,
 )
 
@@ -89,6 +91,8 @@ class GridSolver(BaseSolver):
             for j in range(self._grid_size)]
         ) * configs.safety_weight
 
+        # backward induction
+        tstart = time.time()
         values = np.full((self._grid_size + 2, self._grid_size + 2), -np.inf) # two more rows and columns as sentinels
         values[1:-1, 1:-1] = goal_array
         best_actions = []
@@ -110,10 +114,13 @@ class GridSolver(BaseSolver):
             new_values[1:-1, 1:-1][best_n2 == 2] += values[1:-1, :-2][best_n2 == 2]
             new_values[1:-1, 1:-1][best_n2 == 3] += values[:-2, 1:-1][best_n2 == 3]
             values = new_values
+        tend = time.time()
 
         self._solution = np.array(list(reversed(best_actions)))
         if not np.all(values[1:-1, 1:-1][self._grid] >= 0):
             print("!!! No feasible solution found in given steps !!!")
+
+        return tend - tstart
 
     def report_solution(self, start_xy=None):
         loc = start_xy or self._start_xy
@@ -184,6 +191,8 @@ class SampleGraphSolver(BaseSolver):
         self._connections = None
         self._solution = None # store solution for a certain case
 
+        self._safety_cost_cache = None # for visualization
+
     def _generate_mesh(self, env):
         # generate nodes, first node is the goal
         points = env._generate_points(self._sample_num - 2)
@@ -229,8 +238,14 @@ class SampleGraphSolver(BaseSolver):
         dist_list = [configs.time_weight * self._samples.geoms[n1].distance(self._samples.geoms[n2]) for n1, n2 in self._connections] * 2
         connection_list = self._connections + [(n2, n1) for n1, n2 in self._connections]
         adj_matrix = csc_matrix((dist_list, zip(*connection_list)), shape=(self._sample_num, self._sample_num))
-        # point_array = np.array(mapping(self._samples)['coordinates'])
-        safety_cost = np.array([1/env.obstacles.distance(p) for p in self._samples]) * configs.safety_weight
+        safety_type = configs.get("safety_type", "linear")
+        if safety_type == 'reciprocal':
+            safety_cost = np.array([1/env.obstacles.distance(p) for p in self._samples]) * configs.safety_weight
+        elif safety_type == 'linear':
+            safety_cost = -np.array([env.obstacles.distance(p) for p in self._samples]) * configs.safety_weight
+        elif safety_type == 'tanh':
+            safety_cost = -np.array([np.tanh(env.obstacles.distance(p) / configs.safety_scale) for p in self._samples]) * configs.safety_weight
+        self._safety_cost_cache = safety_cost
         goal_array = np.zeros(self._sample_num)
         goal_array[0] = configs.goal_reward # In backward induction, we require exact arrival
 
@@ -247,6 +262,7 @@ class SampleGraphSolver(BaseSolver):
             raise RuntimeError("Initial point and end point is not connected! Consider add more samples")
 
         # backward induction
+        tstart = time.time()
         values = np.copy(goal_array)
         best_actions = []
         # XXX: should this be max step limit or converge condition?
@@ -269,14 +285,17 @@ class SampleGraphSolver(BaseSolver):
 
             values = new_values
             best_actions.append(new_actions)
-            if np.all(new_values[connect_flag] >= 0):
+            if np.all(new_values[connect_flag] >= configs.goal_reward):
                 if early_stop:
                     print("Early stopped")
                     break
+        tend = time.time()
 
         self._solution = np.array(list(reversed(best_actions)))
-        if not np.all(new_values[connect_flag] >= 0):
+        if not np.all(new_values[connect_flag] >= configs.goal_reward):
             print("!!! No feasible solution found in given steps !!!")
+
+        return tend - tstart
 
     def report_solution(self, start_sample_index=1):
         node_list = [start_sample_index]
@@ -299,7 +318,7 @@ class SampleGraphSolver(BaseSolver):
                 color = "green"
                 lwidth = 4
             else:
-                color = "black"
+                color = "gray"
                 lwidth = 1
             ax.plot([self._samples[n1].x, self._samples[n2].x], [self._samples[n1].y, self._samples[n2].y], lw=lwidth, c=color)
 
