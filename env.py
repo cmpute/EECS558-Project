@@ -76,10 +76,10 @@ class DrivingEnv:
             # calculate cost
             cost -= np.linalg.norm(action) * configs.time_weight
             obs_distance = max(0.0, self._obstacles.distance(Point(new_state)) + self._random_state.normal(scale=configs.obstacle_noise))
-            if obs_distance < 1e-3:
+            if obs_distance < 1e-5:
                 cost -= 1000
             else:
-                cost -= 1 / obs_distance * configs.safety_weight
+                pass#cost += obs_distance * configs.safety_weight
 
             # update state and plot
             if ax:
